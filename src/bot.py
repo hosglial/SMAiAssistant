@@ -1,14 +1,15 @@
 """
 Telegram RAG бот для документации UEM SafeMobile.
 """
-import asyncio
 import logging
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler
-from telegram.constants import ParseMode
+from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler, CallbackQueryHandler
 
 from config import Config
 from rag_service import RAGService
+import db_service
+from handlers import start, handle_message, handle_feedback_callback, error_handler
+from handlers.messages import set_rag_service
 
 # Настройка логирования
 logging.basicConfig(
@@ -17,73 +18,66 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Глобальная переменная для RAG сервиса
-rag_service = None
 
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /start"""
-    welcome_message = (
-        "Привет! Я RAG-ассистент по документации UEM SafeMobile.\n\n"
-        "Задайте мне любой вопрос о системе, и я постараюсь найти ответ в документации."
-    )
-    await update.message.reply_text(welcome_message)
-    logger.info(f"Пользователь {update.effective_user.id} запустил бота")
-
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик текстовых сообщений с использованием RAG"""
-    user_question = update.message.text
-    user_id = update.effective_user.id
+async def post_init(application: Application) -> None:
+    """
+    Инициализация сервисов после создания приложения.
     
-    logger.info(f"Получен вопрос от пользователя {user_id}: {user_question}")
+    Args:
+        application: Экземпляр Application
+    """
+    from db_service import DatabaseService
     
-    # Отправляем индикатор "печатает..."
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    config = application.bot_data.get('config')
+    if not config:
+        logger.error("Конфигурация не найдена в bot_data")
+        return
     
-    try:
-        # Получаем ответ от RAG сервиса
-        answer, success = rag_service.answer_question(user_question)
-        
-        # Отправляем ответ пользователю с markdown форматированием
-        await update.message.reply_text(
-            answer,
-            parse_mode=ParseMode.MARKDOWN
-        )
-        
-        status = "успешно" if success else "без результата"
-        logger.info(f"Ответ отправлен пользователю {user_id} ({status})")
-        
-    except Exception as e:
-        error_message = "⚠️ Извините, произошла ошибка при обработке вашего вопроса. Попробуйте позже."
-        await update.message.reply_text(error_message)
-        logger.error(f"Ошибка при обработке сообщения: {e}", exc_info=True)
+    # Инициализируем RAG сервис
+    rag_service = RAGService(config)
+    set_rag_service(rag_service)
+    logger.info("RAG сервис инициализирован")
+    
+    # Инициализируем сервис базы данных
+    db_service.db_service = DatabaseService(config)
+    await db_service.db_service.initialize()
+    logger.info("Сервис базы данных инициализирован")
 
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик ошибок."""
-    logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
+async def post_shutdown(application: Application) -> None:
+    """
+    Закрытие соединений при завершении работы бота.
+    
+    Args:
+        application: Экземпляр Application
+    """
+    if db_service.db_service:
+        await db_service.db_service.close()
 
 
 def main() -> None:
     """Главная функция запуска бота."""
-    global rag_service
-    
     try:
         # Загружаем конфигурацию
         config = Config.from_env()
         logger.info("Конфигурация загружена")
         
-        # Инициализируем RAG сервис
-        rag_service = RAGService(config)
-        logger.info("RAG сервис инициализирован")
+        # Создаем приложение с post_init и post_shutdown через ApplicationBuilder
+        application = (
+            Application.builder()
+            .token(config.telegram_bot_token)
+            .post_init(post_init)
+            .post_shutdown(post_shutdown)
+            .build()
+        )
         
-        # Создаем приложение
-        application = Application.builder().token(config.telegram_bot_token).build()
+        # Сохраняем конфигурацию в bot_data для использования в post_init
+        application.bot_data['config'] = config
         
         # Регистрируем обработчики
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        application.add_handler(CallbackQueryHandler(handle_feedback_callback))
         
         # Регистрируем обработчик ошибок
         application.add_error_handler(error_handler)

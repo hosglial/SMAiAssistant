@@ -63,13 +63,43 @@ class Config(BaseSettings):
         description="Количество документов для поиска"
     )
     rag_score_threshold: float = Field(
-        default=0.5,
+        default=0.3,
         ge=0.0,
         le=1.0,
         description="Минимальный порог релевантности (0.3-0.5 оптимально)"
     )
     
-    @field_validator("telegram_bot_token", "openrouter_api_key")
+    # PostgreSQL
+    postgres_host: str = Field(
+        default="localhost",
+        description="Хост PostgreSQL сервера"
+    )
+    postgres_port: int = Field(
+        default=5432,
+        ge=1,
+        le=65535,
+        description="Порт PostgreSQL сервера"
+    )
+    postgres_user: str = Field(
+        default="postgres",
+        description="Пользователь PostgreSQL"
+    )
+    postgres_password: str = Field(
+        ...,
+        description="Пароль PostgreSQL"
+    )
+    postgres_database: str = Field(
+        default="aiassistant",
+        description="Название базы данных"
+    )
+    postgres_db_pool_size: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Размер пула соединений с БД"
+    )
+    
+    @field_validator("telegram_bot_token", "openrouter_api_key", "postgres_password")
     @classmethod
     def validate_not_empty(cls, v: str, info) -> str:
         """Проверяет, что обязательные поля не пустые"""

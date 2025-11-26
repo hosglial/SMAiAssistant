@@ -95,7 +95,7 @@ class RAGService:
             logger.error(f"Ошибка при поиске в Qdrant: {e}")
             raise
     
-    def generate_answer(self, question: str, contexts: List[Dict[str, Any]]) -> Tuple[str, bool]:
+    def generate_answer(self, question: str, contexts: List[Dict[str, Any]]) -> Tuple[str, bool, str, str]:
         """
         Генерация ответа через OpenRouter API
         
@@ -104,7 +104,7 @@ class RAGService:
             contexts: Список релевантных контекстов
             
         Returns:
-            Tuple[str, bool]: (Ответ в формате markdown, Флаг успешности поиска)
+            Tuple[str, bool, str, str]: (Ответ в формате markdown, Флаг успешности поиска, Полный промпт, Полный ответ LLM)
         """
         # Формируем контекст из найденных фрагментов
         context_text = "\n\n".join([
@@ -122,7 +122,7 @@ class RAGService:
 ФОРМАТ ОТВЕТА - СТРОГО JSON без дополнительного текста:
 {{
   "success": true/false,
-  "answer": "твой ответ в markdown"
+  "answer": "твой ответ в Telegram Markdown"
 }}
 
 ПРАВИЛА:
@@ -132,8 +132,17 @@ class RAGService:
    ✅ ПРАВИЛЬНО: "Системные требования включают: PostgreSQL 12+, 8GB RAM..."
    ❌ НЕПРАВИЛЬНО: "В предоставленном контексте указано, что..."
    ❌ НЕПРАВИЛЬНО: "Согласно документации..."
-4. Используй markdown: **жирный**, *курсив*, `код`, списки, заголовки
-5. Структурируй ответ понятно и логично
+4. ФОРМАТИРОВАНИЕ - используй только поддерживаемый Telegram Markdown:
+   • **жирный** или __жирный__ для выделения важного
+   • *курсив* или _курсив_ для акцентов
+   • `код` для команд, параметров, имен файлов
+   • ```
+     многострочный код
+     ``` для блоков кода
+   • [текст ссылки](URL) для ссылок
+   • ~~зачеркнутый~~ для устаревшей информации
+   • ИЗБЕГАЙ: заголовков (#), таблиц (|), сложных вложений
+5. Структурируй ответ понятно и логично, используй нумерованные и маркированные списки
 6. Если success=false, кратко объясни что именно не найдено"""
         
         logger.info(f"Сформирован промпт. Длина: {len(prompt)} символов, контекстов: {len(contexts)}")
@@ -183,19 +192,20 @@ class RAGService:
                     answer = response_data.get('answer', '')
                     
                     logger.info(f"Ответ распарсен. Success: {success}, длина ответа: {len(answer)}")
-                    return answer, success
+                    return answer, success, prompt, raw_answer
                     
                 except json.JSONDecodeError as je:
                     logger.error(f"Ошибка парсинга JSON ответа: {je}")
                     logger.error(f"Сырой ответ был: {raw_answer}")
                     # Возвращаем сырой ответ как есть
-                    return raw_answer, False
+                    return raw_answer, False, prompt, raw_answer
             
         except Exception as e:
             logger.error(f"Ошибка при генерации ответа через OpenRouter: {e}")
-            raise
+            # В случае ошибки возвращаем пустые значения для промпта и ответа
+            return "", False, prompt if 'prompt' in locals() else "", ""
     
-    def answer_question(self, question: str) -> Tuple[str, bool]:
+    def answer_question(self, question: str) -> Tuple[str, bool, List[Dict[str, Any]], str, str, float]:
         """
         Основной метод для получения ответа на вопрос
         
@@ -203,7 +213,7 @@ class RAGService:
             question: Вопрос пользователя
             
         Returns:
-            Tuple[str, bool]: (Ответ на вопрос, Флаг успешности)
+            Tuple[str, bool, List[Dict], str, str, float]: (Ответ на вопрос, Флаг успешности, Контексты, Полный промпт, Полный ответ LLM, Средняя оценка контекста)
         """
         try:
             # Шаг 1: Векторизация запроса
@@ -215,10 +225,22 @@ class RAGService:
             
             if not contexts:
                 logger.warning("Не найдено ни одного релевантного фрагмента")
-                return "К сожалению, я не нашел релевантной информации в документации для ответа на ваш вопрос.", False
+                empty_prompt = f"Вопрос пользователя: {question}\n\nКонтекст не найден."
+                return (
+                    "К сожалению, я не нашел релевантной информации в документации для ответа на ваш вопрос.",
+                    False,
+                    [],
+                    empty_prompt,
+                    "",
+                    0.0
+                )
+            
+            # Вычисляем среднюю оценку релевантности
+            avg_score = sum(ctx['score'] for ctx in contexts) / len(contexts) if contexts else 0.0
+            logger.info(f"Средняя оценка релевантности контекста: {avg_score:.3f}")
             
             # Шаг 3: Генерация ответа
-            answer, success = self.generate_answer(question, contexts)
+            answer, success, full_prompt, full_llm_response = self.generate_answer(question, contexts)
             
             # Если LLM вернула success=False, добавляем отбивку
             if not success:
@@ -228,12 +250,19 @@ class RAGService:
                     fallback_message += f"_{answer}_"
                 else:
                     fallback_message += "_Предоставленные фрагменты документации не содержат информации для ответа на ваш вопрос._"
-                return fallback_message, False
+                return fallback_message, False, contexts, full_prompt, full_llm_response, avg_score
             
-            return answer, success
+            return answer, success, contexts, full_prompt, full_llm_response, avg_score
             
         except Exception as e:
             error_msg = f"Произошла ошибка при обработке вопроса: {str(e)}"
             logger.error(error_msg)
-            return "⚠️ Извините, произошла ошибка при обработке вашего вопроса. Попробуйте позже.", False
+            return (
+                "⚠️ Извините, произошла ошибка при обработке вашего вопроса. Попробуйте позже.",
+                False,
+                [],
+                "",
+                "",
+                0.0
+            )
 
