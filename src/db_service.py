@@ -66,7 +66,7 @@ class DatabaseService:
             llm_response TEXT NOT NULL,
             success BOOLEAN NOT NULL,
             telegram_message_id BIGINT,
-            feedback TEXT,
+            feedback BOOLEAN,
             feedback_timestamp TIMESTAMP,
             avg_context_score FLOAT,
             created_at TIMESTAMP DEFAULT NOW()
@@ -82,6 +82,34 @@ class DatabaseService:
         try:
             async with self.pool.acquire() as conn:
                 await conn.execute(create_table_query)
+                
+                # Миграция: изменяем тип поля feedback с TEXT на BOOLEAN для существующих таблиц
+                migration_query = """
+                DO $$
+                BEGIN
+                    -- Проверяем, существует ли колонка feedback с типом TEXT
+                    IF EXISTS (
+                        SELECT 1 
+                        FROM information_schema.columns 
+                        WHERE table_name = 'conversations' 
+                        AND column_name = 'feedback' 
+                        AND data_type = 'text'
+                    ) THEN
+                        -- Конвертируем существующие данные и изменяем тип
+                        ALTER TABLE conversations 
+                        ALTER COLUMN feedback TYPE BOOLEAN 
+                        USING CASE 
+                            WHEN feedback = 'yes' THEN true
+                            WHEN feedback = 'no' THEN false
+                            ELSE NULL
+                        END;
+                        
+                        RAISE NOTICE 'Поле feedback успешно изменено на BOOLEAN';
+                    END IF;
+                END $$;
+                """
+                await conn.execute(migration_query)
+                
             logger.info("Таблица conversations создана или уже существует")
         except Exception as e:
             logger.error(f"Ошибка при создании таблицы: {e}", exc_info=True)
@@ -173,6 +201,9 @@ class DatabaseService:
             logger.warning("Пул соединений не инициализирован, пропускаем обновление feedback")
             return False
         
+        # Конвертируем строку в boolean
+        feedback_bool = True if feedback == 'yes' else False
+        
         try:
             update_query = """
             UPDATE conversations 
@@ -184,14 +215,14 @@ class DatabaseService:
             async with self.pool.acquire() as conn:
                 record_id = await conn.fetchval(
                     update_query,
-                    feedback,
+                    feedback_bool,
                     telegram_message_id
                 )
             
             if record_id:
                 logger.info(
                     f"Feedback обновлен для сообщения {telegram_message_id}. "
-                    f"Значение: {feedback}, Record ID: {record_id}"
+                    f"Значение: {feedback_bool} ('{feedback}'), Record ID: {record_id}"
                 )
                 return True
             else:
