@@ -6,7 +6,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
-from .utils import escape_markdown_v2
+from .utils import escape_markdown_v2, split_long_message
 import db_service
 
 logger = logging.getLogger(__name__)
@@ -65,39 +65,81 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Пытаемся отправить ответ с markdown форматированием
-        try:
-            sent_message = await update.message.reply_text(
-                answer,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=reply_markup
-            )
-            logger.info(f"Сообщение отправлено с Markdown форматированием")
-        except Exception as markdown_error:
-            # Если ошибка парсинга markdown - пробуем MarkdownV2 с экранированием
-            logger.error(f"Ошибка парсинга Markdown: {markdown_error}")
-            logger.warning("Повторная отправка с экранированием специальных символов...")
-            
-            try:
-                escaped_answer = escape_markdown_v2(answer)
-                sent_message = await update.message.reply_text(
-                    escaped_answer,
-                    parse_mode=ParseMode.MARKDOWN_V2,
-                    reply_markup=reply_markup
-                )
-                logger.info("Сообщение отправлено с MarkdownV2 и экранированием")
-            except Exception as v2_error:
-                # Если и это не помогло - отправляем вообще без форматирования
-                logger.error(f"Ошибка парсинга MarkdownV2: {v2_error}")
-                logger.warning("Отправка вообще без форматирования...")
-                
-                sent_message = await update.message.reply_text(
-                    answer,
-                    reply_markup=reply_markup
-                )
-                logger.info("Сообщение отправлено без форматирования")
+        # Разбиваем длинное сообщение на части
+        message_parts = split_long_message(answer)
+        logger.info(f"Сообщение разбито на {len(message_parts)} частей")
         
-        telegram_message_id = sent_message.message_id
+        # Определяем режим форматирования для всех частей
+        parse_mode = None
+        use_escape = False
+        
+        # Отправляем каждую часть отдельным сообщением
+        sent_message = None
+        for i, part in enumerate(message_parts):
+            is_last_part = (i == len(message_parts) - 1)
+            # Кнопки обратной связи добавляем только к последнему сообщению
+            current_reply_markup = reply_markup if is_last_part else None
+            
+            # Для первой части определяем режим форматирования
+            if i == 0:
+                # Пытаемся отправить с markdown форматированием
+                try:
+                    sent_message = await update.message.reply_text(
+                        part,
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=current_reply_markup
+                    )
+                    parse_mode = ParseMode.MARKDOWN
+                    logger.info(f"Сообщение отправлено с Markdown форматированием (часть {i+1}/{len(message_parts)})")
+                except Exception as markdown_error:
+                    # Если ошибка парсинга markdown - пробуем MarkdownV2 с экранированием
+                    logger.error(f"Ошибка парсинга Markdown: {markdown_error}")
+                    logger.warning("Повторная отправка с экранированием специальных символов...")
+                    
+                    try:
+                        escaped_part = escape_markdown_v2(part)
+                        sent_message = await update.message.reply_text(
+                            escaped_part,
+                            parse_mode=ParseMode.MARKDOWN_V2,
+                            reply_markup=current_reply_markup
+                        )
+                        parse_mode = ParseMode.MARKDOWN_V2
+                        use_escape = True
+                        logger.info(f"Сообщение отправлено с MarkdownV2 и экранированием (часть {i+1}/{len(message_parts)})")
+                    except Exception as v2_error:
+                        # Если и это не помогло - отправляем вообще без форматирования
+                        logger.error(f"Ошибка парсинга MarkdownV2: {v2_error}")
+                        logger.warning("Отправка вообще без форматирования...")
+                        
+                        sent_message = await update.message.reply_text(
+                            part,
+                            reply_markup=current_reply_markup
+                        )
+                        parse_mode = None
+                        use_escape = False
+                        logger.info(f"Сообщение отправлено без форматирования (часть {i+1}/{len(message_parts)})")
+            else:
+                # Для остальных частей используем уже определенный режим
+                text_to_send = escape_markdown_v2(part) if use_escape else part
+                try:
+                    sent_message = await update.message.reply_text(
+                        text_to_send,
+                        parse_mode=parse_mode,
+                        reply_markup=current_reply_markup
+                    )
+                except Exception as send_error:
+                    # Если отправка не удалась, пробуем без форматирования
+                    logger.warning(f"Ошибка при отправке части {i+1}: {send_error}, пробуем без форматирования")
+                    sent_message = await update.message.reply_text(
+                        part,
+                        reply_markup=current_reply_markup
+                    )
+                    # Обновляем режим для следующих частей
+                    parse_mode = None
+                    use_escape = False
+        
+        # Используем ID последнего отправленного сообщения для сохранения в БД
+        telegram_message_id = sent_message.message_id if sent_message else None
         status = "успешно" if success else "без результата"
         logger.info(f"Ответ отправлен пользователю {user_id} ({status}), Message ID: {telegram_message_id}")
         
