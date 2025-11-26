@@ -92,6 +92,55 @@ curl http://localhost:11434/api/tags
 poetry run python src/bot.py
 ```
 
+## Docker
+
+### Сборка образа локально
+
+```bash
+docker build -t aiassistant-bot:latest .
+```
+
+### Запуск контейнера
+
+```bash
+docker run -d \
+  --name aiassistant-bot \
+  --env-file .env \
+  -e QDRANT_URL=http://host.docker.internal:6333 \
+  -e OLLAMA_URL=http://host.docker.internal:11434 \
+  aiassistant-bot:latest
+```
+
+**Примечание:** Если Qdrant и Ollama запущены на хосте, используйте `host.docker.internal` для доступа к ним из контейнера. Для Linux может потребоваться `--network host` или использование IP адреса хоста.
+
+### Использование образа из GitHub Container Registry
+
+После сборки через GitHub Actions образ будет доступен в `ghcr.io`:
+
+```bash
+docker pull ghcr.io/<your-username>/<repo-name>:latest
+docker run -d --name aiassistant-bot --env-file .env ghcr.io/<your-username>/<repo-name>:latest
+```
+
+## GitHub Actions
+
+При пуше в ветку `main` или создании тега автоматически запускается сборка Docker образа и публикация в GitHub Container Registry (ghcr.io).
+
+**Триггеры:**
+- Push в ветку `main` → образ с тегом `main` и `latest`
+- Создание тега `v*` → образ с тегом версии (например, `v1.0.0`)
+- Pull Request → сборка без публикации
+
+**Использование образа:**
+```bash
+# Вход в GitHub Container Registry
+echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
+
+# Запуск образа
+docker run -d --name aiassistant-bot --env-file .env \
+  ghcr.io/<your-username>/<repo-name>:latest
+```
+
 ## Использование
 
 1. Найдите вашего бота в Telegram по имени, которое вы указали при создании
@@ -114,6 +163,11 @@ AIAssistantBot/
 │   ├── bot.py           # Основной файл Telegram бота
 │   ├── config.py        # Конфигурация приложения
 │   └── rag_service.py   # RAG сервис (векторный поиск + генерация)
+├── .github/
+│   └── workflows/
+│       └── docker-build.yml  # GitHub Actions workflow для сборки образа
+├── Dockerfile            # Dockerfile для сборки образа
+├── .dockerignore         # Исключения для Docker сборки
 ├── pyproject.toml       # Конфигурация Poetry и зависимости
 ├── poetry.lock          # Заблокированные версии зависимостей
 └── README.md            # Документация

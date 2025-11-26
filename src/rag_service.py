@@ -137,7 +137,7 @@ class RAGService:
 6. Если success=false, кратко объясни что именно не найдено"""
         
         logger.info(f"Сформирован промпт. Длина: {len(prompt)} символов, контекстов: {len(contexts)}")
-        logger.debug(f"Полный промпт:\n{'-'*50}\n{prompt}\n{'-'*50}")
+        logger.info(f"Полный промпт:\n{'-'*50}\n{prompt}\n{'-'*50}")
         
         try:
             headers = {
